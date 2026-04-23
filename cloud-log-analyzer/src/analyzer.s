@@ -35,6 +35,8 @@ TODO (extensión para estudiantes):
     .align 4
 buffer:         .skip 4096
 num_buf:        .skip 32      // Buffer para imprimir enteros en texto
+codigo_frec:    .skip 8       // Guardar el código más frecuente
+frecuencia_max: .skip 8       // Guardar la frecuencia máxima
 
 .section .data
 msg_titulo:         .asciz "=== Mini Cloud Log Analyzer ===\n"
@@ -42,6 +44,8 @@ msg_2xx:            .asciz "Éxitos 2xx: "
 msg_4xx:            .asciz "Errores 4xx: "
 msg_5xx:            .asciz "Errores 5xx: "
 msg_fin_linea:      .asciz "\n"
+msg_codigo_frec:    .asciz "Código más frecuente: "
+msg_frecuencia:     .asciz " (frecuencia: "
 
 .section .text
 .global _start
@@ -55,6 +59,28 @@ _start:
     // Estado del parser
     mov x22, #0                  // numero_actual
     mov x23, #0                  // tiene_digitos (0/1)
+
+    // Inicializar arreglo para frecuencias de códigos (1-999)
+    // Usamos un arreglo simple de 1000 enteros (4000 bytes)
+    // Para simplificar, usaremos la pila o un área estática
+    // Reservamos espacio en .bss para un arreglo de 1000 contadores
+    .section .bss
+    .align 4
+freq_array:     .skip 8000       // 1000 * 8 bytes = 8000 bytes para enteros de 64 bits
+    
+    .section .text
+    // Inicializar arreglo de frecuencias a cero
+    adrp x28, freq_array
+    add x28, x28, :lo12:freq_array
+    mov x29, #0                   // índice
+    mov x30, #1000                // tamaño máximo
+    
+init_freq_loop:
+    cmp x29, x30
+    b.ge leer_bloque
+    str xzr, [x28, x29, lsl #3]   // freq_array[x29] = 0
+    add x29, x29, #1
+    b init_freq_loop
 
 leer_bloque:
     // read(STDIN_FD, buffer, 4096)
@@ -107,6 +133,8 @@ fin_numero:
 
     mov x0, x22
     bl clasificar_codigo
+    // Actualizar frecuencia del código
+    bl actualizar_frecuencia
 
 reiniciar_numero:
     mov x22, #0
@@ -118,6 +146,7 @@ fin_lectura:
     cbz x23, imprimir_reporte
     mov x0, x22
     bl clasificar_codigo
+    bl actualizar_frecuencia
 
 imprimir_reporte:
     // Encabezado
@@ -154,6 +183,9 @@ imprimir_reporte:
     adrp x0, msg_fin_linea
     add x0, x0, :lo12:msg_fin_linea
     bl write_cstr
+
+    // Determinar y mostrar el código más frecuente
+    bl determinar_codigo_frecuente
 
 salida_ok:
     mov x0, #0
@@ -193,6 +225,75 @@ revisar_5xx:
     add x21, x21, #1
 
 clasificar_fin:
+    ret
+
+// -----------------------------------------------------------------------------
+// actualizar_frecuencia(x0 = codigo_http)
+// Incrementa el contador de frecuencia para el código dado.
+// -----------------------------------------------------------------------------
+actualizar_frecuencia:
+    adrp x1, freq_array
+    add x1, x1, :lo12:freq_array
+    ldr x2, [x1, x0, lsl #3]     // cargar frecuencia actual
+    add x2, x2, #1                // incrementar
+    str x2, [x1, x0, lsl #3]     // guardar nueva frecuencia
+    ret
+
+// -----------------------------------------------------------------------------
+// determinar_codigo_frecuente
+// Encuentra el código HTTP con mayor frecuencia y lo imprime.
+// -----------------------------------------------------------------------------
+determinar_codigo_frecuente:
+    adrp x1, freq_array
+    add x1, x1, :lo12:freq_array
+    mov x2, #0                    // código más frecuente
+    mov x3, #0                    // frecuencia máxima
+    mov x4, #1                    // índice actual (código)
+    mov x5, #1000                 // límite superior
+
+buscar_max:
+    cmp x4, x5
+    b.ge mostrar_resultado
+    ldr x6, [x1, x4, lsl #3]     // cargar frecuencia del código x4
+    cmp x6, x3
+    b.lt siguiente_codigo
+    // Nueva frecuencia máxima encontrada
+    mov x3, x6                    // actualizar frecuencia máxima
+    mov x2, x4                    // actualizar código más frecuente
+
+siguiente_codigo:
+    add x4, x4, #1
+    b buscar_max
+
+mostrar_resultado:
+    // Verificar si hay al menos un código
+    cmp x3, #0
+    b.eq fin_determinar
+    
+    // Imprimir mensaje "Código más frecuente: "
+    adrp x0, msg_codigo_frec
+    add x0, x0, :lo12:msg_codigo_frec
+    bl write_cstr
+    
+    // Imprimir el código más frecuente
+    mov x0, x2
+    bl print_uint
+    
+    // Imprimir " (frecuencia: "
+    adrp x0, msg_frecuencia
+    add x0, x0, :lo12:msg_frecuencia
+    bl write_cstr
+    
+    // Imprimir la frecuencia
+    mov x0, x3
+    bl print_uint
+    
+    // Imprimir ")\n"
+    adrp x0, msg_cierre_parent
+    add x0, x0, :lo12:msg_cierre_parent
+    bl write_cstr
+
+fin_determinar:
     ret
 
 // -----------------------------------------------------------------------------
@@ -263,3 +364,6 @@ pu_loop:
     mov x8, #SYS_write
     svc #0
     ret
+
+.section .data
+msg_cierre_parent:  .asciz ")\n"
